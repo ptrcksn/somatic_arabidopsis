@@ -15,7 +15,7 @@ exon_junctions <- read_tsv(genome_gff_file, col_names=F) %>%
     filter(type == "exon") %>%
     pivot_longer(cols=left:right, names_to="end", values_to="pos")
 
-exon_junctions_bed <- tibble(chrom=str_remove(exon_junctions$chr, "Chr"), chromStart=(exon_junctions$pos-1), chromEnd=exon_junctions$pos, name=".", score=".", strand=".") %>%
+exon_junctions_bed <- tibble(chrom=str_remove(exon_junctions$chr, "Chr"), chromStart=exon_junctions$pos, chromEnd=(exon_junctions$pos+1), name=".", score=".", strand=".") %>%
     arrange(chrom, chromStart)
 
 

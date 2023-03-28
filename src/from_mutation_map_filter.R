@@ -19,8 +19,8 @@ query_flags <- str_split(query_flags, ";")[[1]]
 flagged_accession_mutations <- lapply(query_flags, function(x){accession_mutations %>%
     filter(str_detect(flag, x)) %>%
     mutate(chrom=chr) %>%
-    mutate(chromStart=(pos-1)) %>%
-    mutate(chromEnd=pos) %>%
+    mutate(chromStart=pos) %>%
+    mutate(chromEnd=(pos+1)) %>%
     mutate(name=paste(chr, pos, sep=".")) %>%
     mutate(score=".") %>%
     mutate(strand=".") %>%

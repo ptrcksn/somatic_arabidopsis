@@ -233,6 +233,31 @@ rule mutation_map_generate:
         python src/printMutationMap_fromPileup.py {input.augmented_merged_pileup_tsv} TRUE 6 40 0 0.7 {output.mutations_map_tsv}
         '''
 
+rule tair10_exons_gff_generate:
+    input:
+        tair10_genes_gff = data_dir+"/"+misc_dir+"/"+tair10_genes_gff
+
+    output:
+        tair10_union_exons_gff = data_dir+"/"+misc_dir+"/TAIR10_GFF3_exons.union.noambiguous.gff"
+
+    conda:
+        "envs/bedtools_env.yaml"
+
+    shell:
+        '''
+        awk -v OFS="\t" '{{
+            if($3 == "five_prime_UTR" || $3 == "exon" || $3 == "three_prime_UTR"){{
+                split($9, a, "Parent=");
+                split(a[2], b, ".");
+                print $1,$2,$3,$4,$5,$6,$7,$8,b[1]
+            }}
+        }}' {input.tair10_genes_gff} |
+        sort -k1,1 -k4,4n -k5,5n |
+        bedtools merge -i - -c 7,9 -o distinct |
+        awk -v OFS="\t" '{{ print $1,"TAIR10","exon",($2+1),$3,".",$4,".",$5 }}' |
+        awk '!index($9, ",")' > {output.tair10_union_exons_gff}
+        '''
+
 rule germline_bed_generate:
     input:
         germline_variants_vcf = data_dir+"/"+misc_dir+"/"+germline_variants_vcf
@@ -242,7 +267,7 @@ rule germline_bed_generate:
 
     shell:
         '''
-        awk -v OFS="\t" '/^[^#]/ {{ print $1,($2-1),$2,$1"."$2,".","." }}' {input.germline_variants_vcf} > {output.germline_variants_bed}
+        awk -v OFS="\t" '/^[^#]/ {{ print $1,$2,($2+1),$1"."$2,".","." }}' {input.germline_variants_vcf} > {output.germline_variants_bed}
         '''
 
 rule germline_remove:
@@ -256,7 +281,7 @@ rule germline_remove:
     shell:
         '''
         awk -v OFS="\t" '{{
-            if(FNR==NR){{ a[$1,$3]; next }};
+            if(FNR==NR){{ a[$1,$2]; next }};
             if(($1,$2) in a){{
                 if($8 == ""){{
                     print $0,"germline"
@@ -339,6 +364,7 @@ rule blacklist_filter:
 
 rule rna_edit_bed_generate:
     input:
+        genome_fa = data_dir+"/"+genome_dir+"/"+genome_fa,
         tair9_genes_gff = data_dir+"/"+misc_dir+"/"+tair9_genes_gff,
         rna_edit_xls = data_dir+"/"+misc_dir+"/"+rna_edit_xls
 
@@ -350,7 +376,7 @@ rule rna_edit_bed_generate:
 
     shell:
         '''
-        Rscript src/rna_edit_filter.R {input.tair9_genes_gff} {input.rna_edit_xls} {output.rna_edit_bed}
+        Rscript src/rna_edit_filter.R {input.genome_fa} {input.tair9_genes_gff} {input.rna_edit_xls} {output.rna_edit_bed}
         '''
 
 rule rna_edit_filter:
@@ -446,25 +472,10 @@ rule sequence_error_filter:
         python src/filterAppend_sequenceError.py {input.STAR_splice_junction_filter_tsv} "0.0001" 30 "sequencing_error" > {output.sequence_error_filter_tsv}
         '''
 
-rule clustered_mutation_filter:
-    input:
-        sequence_error_filter_tsv = data_dir+"/"+mutations_map_dir+"/{accession}.sequence_error.tsv"
-
-    output:
-        clustered_mutation_filter_tsv = data_dir+"/"+mutations_map_dir+"/{accession}.clustered_mutation.tsv"
-
-    conda:
-        "envs/scipy_env.yaml"
-
-    shell:
-        '''
-        python src/filterAppend_clusterMutations.py {input.sequence_error_filter_tsv} 100 3 "clustered_mutation" > {output.clustered_mutation_filter_tsv}
-        '''
-
 rule bcf_filter:
     input:
         augmented_merged_pileup_tsv = data_dir+"/"+pileup_dir+"/{accession}.all.augmented_pileup.tsv",
-        clustered_mutation_filter_tsv = data_dir+"/"+mutations_map_dir+"/{accession}.clustered_mutation.tsv"
+        sequence_error_filter_tsv = data_dir+"/"+mutations_map_dir+"/{accession}.sequence_error.tsv"
 
     output:
         filtered_mutations_map_tsv = data_dir+"/"+mutations_map_dir+"/{accession}.filtered_map.tsv"
@@ -479,12 +490,12 @@ rule bcf_filter:
         then
             if [ "$nCols" -gt "10" ]
             then
-                python src/filterAppend_statFromBCF.py {input.clustered_mutation_filter_tsv} {input.augmented_merged_pileup_tsv} "bcf" 0.05 0.05 0.05 0.05 0.05 > {output.filtered_mutations_map_tsv}
+                python src/filterAppend_statFromBCF.py {input.sequence_error_filter_tsv} {input.augmented_merged_pileup_tsv} "bcf" 0.05 0.05 0.05 0.05 0.05 > {output.filtered_mutations_map_tsv}
             else
-                cp {input.clustered_mutation_filter_tsv} {output.filtered_mutations_map_tsv}
+                cp {input.sequence_error_filter_tsv} {output.filtered_mutations_map_tsv}
             fi
         else
-            cp {input.clustered_mutation_filter_tsv} {output.filtered_mutations_map_tsv}
+            cp {input.sequence_error_filter_tsv} {output.filtered_mutations_map_tsv}
         fi
         '''
 
@@ -530,9 +541,204 @@ rule shared_mutations_remove:
         Rscript src/unique_mutations.R {input.not_flagged_filtered_mutations_map_tsv} {output.unique_filtered_mutations_map_tsv}
         '''
 
+rule coverage_map_generate:
+    input:
+        expression_bam = data_dir+"/"+expression_dir+"/{accession}.RmdupSortedAligned.out.bam"
+
+    output:
+        coverage_map_bg = data_dir+"/"+expression_dir+"/{accession}.coverage_map.bg.gz"
+
+    conda:
+        "envs/samtools_env.yaml"
+
+    shell:
+        '''
+        samtools depth -q 29 -d 0 {input.expression_bam} | \
+        awk -v OFS="\t" '{{ if($3 >= 40) print $1,$2,($2+1),"NA",$3,"*" }}' | \
+        sort -k 1,1 -k2,2n | \
+        gzip --best -c > {ouput.depth_bed}
+        '''
+
+rule vaf_bed_generate:
+    input:
+        merged_filtered_mutations_map_tsv = data_dir+"/"+mutations_map_dir+"/all.filtered_map.tsv"
+
+    params:
+        accession = "{accession}"
+
+    output:
+        vaf_bed = data_dir+"/"+misc_dir+"/{accession}.vaf.bed"
+
+    conda:
+        "envs/r_env.yaml"
+
+    shell:
+        '''
+        Rscript src/from_mutation_map_filter.R {input.merged_filtered_mutations_map_tsv} {params.accession} "vaf" {output.vaf_bed}
+        '''
+
+rule exon_boundary_range_bed_generate:
+    input:
+        exon_boundary_bed = data_dir+"/"+misc_dir+"/exon_boundary.bed"
+
+    output:
+        exon_boundary_range_bed = data_dir+"/"+misc_dir+"/exon_boundary.range.bed"
+
+    shell:
+        '''
+        awk -v OFS="\t" '{{ l = ($2-6); if(l < 0){{ l = 0 }}; print $1,l,($3+6),$1"."$3,".","." }}' {input.exon_boundary_bed} > {output.exon_boundary_range_bed}
+        '''
+
+rule STAR_splice_junction_range_bed_generate:
+    input:
+        STAR_splice_junction_bed = data_dir+"/"+expression_dir+"/{accession}.SJ.bed"
+
+    output:
+        STAR_splice_junction_range_bed = data_dir+"/"+expression_dir+"/{accession}.SJ.range.bed"
+
+    shell:
+        '''
+        awk -v OFS="\t" '{{ l = ($2-6); if(l < 0){{ l = 0 }}; print $1,l,($3+6),$1"."$3,".","." }}' {input.STAR_splice_junction_bed} > {output.STAR_splice_junction_range_bed}
+        '''
+
+rule sequence_error_bed_generate:
+    input:
+        merged_filtered_mutations_map_tsv = data_dir+"/"+mutations_map_dir+"/all.filtered_map.tsv"
+
+    params:
+        accession = "{accession}"
+
+    output:
+        seq_error_bed = data_dir+"/"+misc_dir+"/{accession}.seq_error.bed"
+
+    conda:
+        "envs/r_env.yaml"
+
+    shell:
+        '''
+        Rscript src/from_mutation_map_filter.R {input.merged_filtered_mutations_map_tsv} {params.accession} "sequencing_error" {output.seq_error_bed}
+        '''
+
+rule bcf_bed_generate:
+    input:
+        merged_filtered_mutations_map_tsv = data_dir+"/"+mutations_map_dir+"/all.filtered_map.tsv"
+
+    params:
+        accession = "{accession}"
+
+    output:
+        bcf_bed = data_dir+"/"+misc_dir+"/{accession}.bcf.bed"
+
+    conda:
+        "envs/r_env.yaml"
+
+    shell:
+        '''
+        Rscript src/from_mutation_map_filter.R {input.merged_filtered_mutations_map_tsv} {params.accession} "bcf_variant_distance_bias;bcf_read_position_bias;bcf_mapping_quality_bias;bcf_base_quality_bias;bcf_mapping_quality_vs_strand_bias" {output.bcf_bed}
+        '''
+
+rule multi_instance_bed_generate:
+    input:
+        merged_filtered_mutations_map_tsv = data_dir+"/"+mutations_map_dir+"/all.filtered_map.tsv"
+
+    output:
+        multi_instance_bed = data_dir+"/"+misc_dir+"/multi_instance.bed"
+
+    conda:
+        "envs/r_env.yaml"
+
+    shell:
+        '''
+        Rscript src/multi_instance_filter.R {input.merged_filtered_mutations_map_tsv} {output.multi_instance_bed}
+        '''
+
+rule coverage_map_filter:
+    input:
+        coverage_map_bg = data_dir+"/"+expression_dir+"/{accession}.coverage_map.bg.gz",
+        germline_bed = data_dir+"/"+misc_dir+"/"+"arabidopsis_2029_NoFilters.bed",
+        blacklist_bed = data_dir+"/"+misc_dir+"/"+"blacklist.bed",
+        rna_edit_bed = data_dir+"/"+misc_dir+"/"+"rna_edit.bed",
+        exon_boundary_range_bed = data_dir+"/"+misc_dir+"/exon_boundary.range.bed",
+        polynucleotide_bed = data_dir+"/"+misc_dir+"/"+"polynucleotide.bed",
+        vaf_bed = data_dir+"/"+misc_dir+"/"+"{accession}.vaf.bed",
+        STAR_splice_junction_range_bed = data_dir+"/"+expression_dir+"/{accession}.SJ.range.bed",
+        seq_error_bed = data_dir+"/"+misc_dir+"/"+"{accession}.seq_error.bed",
+        bcf_bed = data_dir+"/"+misc_dir+"/"+"{accession}.bcf.bed"
+
+    params:
+        chr = "{chr}"
+
+    output:
+        coverage_map_filtered_bg = data_dir+"/"+expression_dir+"/{chr}.{accession}.coverage_map.filtered.bg.gz"
+
+    conda:
+        "envs/bedtools_env.yaml"
+
+    shell:
+        '''
+        gunzip -c {input.coverage_map_bg} |
+        awk '$1 == {params.chr}' |
+        bedtools subtract -a - -b {input.germline_bed} |
+        bedtools subtract -a - -b {input.blacklist_bed} |
+        bedtools subtract -a - -b {input.rna_edit_bed} |
+        bedtools subtract -a - -b {input.exon_boundary_range_bed} |
+        bedtools subtract -a - -b {input.polynucleotide_bed} |
+        bedtools subtract -a - -b {input.vaf_bed} |
+        bedtools subtract -a - -b {input.STAR_splice_junction_range_bed} |
+        bedtools subtract -a - -b {input.seq_error_bed} |
+        bedtools subtract -a - -b {input.bcf_bed} |
+        awk -v OFS="\t" '{{ print $1,$2,$3,$5 }}' | gzip > {output.coverage_map_filtered_bg}
+        '''
+
+rule bedg_union:
+    input:
+        coverage_map_filtered_bg = expand(data_dir+"/"+expression_dir+"/{{chr}}.{accession}.coverage_map.filtered.bg.gz", accession=accessions)
+
+    output:
+        union_coverage_map_filtered_bg = data_dir+"/"+expression_dir+"/{chr}.union.bg.gz"
+
+    conda:
+        "envs/bedtools_env.yaml"
+
+    shell:
+        '''
+        bedtools unionbedg -i {input.coverage_map_filtered_bg} | gzip > {output.union_coverage_map_filtered_bg}
+        '''
+
+rule accession_breadth_depth_process:
+    input:
+        accessions_tsv = data_dir+"/"+misc_dir+"/"+accessions_tsv,
+        multi_instance_bed = data_dir+"/"+misc_dir+"/multi_instance.bed",
+        union_coverage_map_filtered_bg = data_dir+"/"+expression_dir+"/{chr}.union.bg.gz"
+
+    output:
+        processed_accession_breadth_depth_tsv = data_dir+"/"+expression_dir+"/{chr}.accession.breadth_depth.tsv"
+
+    conda:
+        "envs/r_env.yaml"
+
+    shell:
+        '''
+        Rscript src/accession_breadth_depth.R {input.accessions_tsv} {input.multi_instance_bed} {input.union_coverage_map_filtered_bg} {output.processed_accession_breadth_depth_tsv}
+        '''
+
+rule accession_breadth_depth_merge:
+    input:
+        processed_accession_breadth_depth_tsv = expand(data_dir+"/"+expression_dir+"/{chr}.accession.breadth_depth.tsv", chr=chrs)
+
+    output:
+        merged_accession_processed_breadth_depth_tsv = data_dir+"/"+expression_dir+"/all.accession.breadth_depth.tsv"
+
+    shell:
+        '''
+        cat {input.processed_accession_breadth_depth_tsv} | awk -v OFS="\t" 'BEGIN{{ print "accession","breadth","depth" }} {{ print $1,$2,$3 }}' > {output.merged_accession_processed_breadth_depth_tsv}
+        '''
+
 rule outlier_derive:
     input:
-        unique_filtered_mutations_map_tsv = data_dir+"/"+mutations_map_dir+"/unique.not_flagged.filtered_map.tsv"
+        accessions_tsv = data_dir+"/"+misc_dir+"/"+accessions_tsv,
+        unique_filtered_mutations_map_tsv = data_dir+"/"+mutations_map_dir+"/unique.not_flagged.filtered_map.tsv",
+        merged_accession_processed_breadth_depth_tsv = data_dir+"/"+expression_dir+"/all.accession.breadth_depth.tsv"
 
     output:
         outliers_tsv = data_dir+"/"+misc_dir+"/outliers.tsv"
@@ -542,7 +748,7 @@ rule outlier_derive:
 
     shell:
         '''
-        Rscript src/derived_outliers.R {input.unique_filtered_mutations_map_tsv} {output.outliers_tsv}
+        Rscript src/derived_outliers.R {input.accessions_tsv} {input.unique_filtered_mutations_map_tsv} {input.merged_accession_processed_breadth_depth_tsv} {output.outliers_tsv}
         '''
 
 rule outlier_remove:
@@ -621,203 +827,13 @@ rule mutations_augment:
         Rscript src/augment_mutations.R {input.tair10_union_exons_gff} {input.processed_mutations_map_tsv} {input.processed_weigel_mutations_map_tsv} {output.augmented_mutations_map_tsv}
         '''
 
-rule multi_instance_bed_generate:
-    input:
-        merged_filtered_mutations_map_tsv = data_dir+"/"+mutations_map_dir+"/all.filtered_map.tsv"
-
-    output:
-        multi_instance_bed = data_dir+"/"+misc_dir+"/multi_instance.bed"
-
-    conda:
-        "envs/r_env.yaml"
-
-    shell:
-        '''
-        Rscript src/multi_instance_filter.R {input.merged_filtered_mutations_map_tsv} {output.multi_instance_bed}
-        '''
-
-rule vaf_bed_generate:
-    input:
-        merged_filtered_mutations_map_tsv = data_dir+"/"+mutations_map_dir+"/all.filtered_map.tsv"
-
-    params:
-        accession = "{accession}"
-
-    output:
-        vaf_bed = data_dir+"/"+misc_dir+"/{accession}.vaf.bed"
-
-    conda:
-        "envs/r_env.yaml"
-
-    shell:
-        '''
-        Rscript src/from_mutation_map_filter.R {input.merged_filtered_mutations_map_tsv} {params.accession} "vaf" {output.vaf_bed}
-        '''
-
-rule seq_error_bed_generate:
-    input:
-        merged_filtered_mutations_map_tsv = data_dir+"/"+mutations_map_dir+"/all.filtered_map.tsv"
-
-    params:
-        accession = "{accession}"
-
-    output:
-        seq_error_bed = data_dir+"/"+misc_dir+"/{accession}.seq_error.bed"
-
-    conda:
-        "envs/r_env.yaml"
-
-    shell:
-        '''
-        Rscript src/from_mutation_map_filter.R {input.merged_filtered_mutations_map_tsv} {params.accession} "sequencing_error" {output.seq_error_bed}
-        '''
-
-rule bcf_bed_generate:
-    input:
-        merged_filtered_mutations_map_tsv = data_dir+"/"+mutations_map_dir+"/all.filtered_map.tsv"
-
-    params:
-        accession = "{accession}"
-
-    output:
-        bcf_bed = data_dir+"/"+misc_dir+"/{accession}.bcf.bed"
-
-    conda:
-        "envs/r_env.yaml"
-
-    shell:
-        '''
-        Rscript src/from_mutation_map_filter.R {input.merged_filtered_mutations_map_tsv} {params.accession} "bcf_variant_distance_bias;bcf_read_position_bias;bcf_mapping_quality_bias;bcf_base_quality_bias;bcf_mapping_quality_vs_strand_bias" {output.bcf_bed}
-        '''
-
-rule exon_boundary_range_bed_generate:
-    input:
-        exon_boundary_bed = data_dir+"/"+misc_dir+"/exon_boundary.bed"
-
-    output:
-        exon_boundary_range_bed = data_dir+"/"+misc_dir+"/exon_boundary.range.bed"
-
-    shell:
-        '''
-        awk -v OFS="\t" '{{ l = ($2-6); if(l < 0){{ l = 0 }}; print $1,l,($3+6),$1"."$3,".","." }}' {input.exon_boundary_bed} > {output.exon_boundary_range_bed}
-        '''
-
-rule STAR_splice_junction_range_bed_generate:
-    input:
-        STAR_splice_junction_bed = data_dir+"/"+expression_dir+"/{accession}.SJ.bed"
-
-    output:
-        STAR_splice_junction_range_bed = data_dir+"/"+expression_dir+"/{accession}.SJ.range.bed"
-
-    shell:
-        '''
-        awk -v OFS="\t" '{{ l = ($2-6); if(l < 0){{ l = 0 }}; print $1,l,($3+6),$1"."$3,".","." }}' {input.STAR_splice_junction_bed} > {output.STAR_splice_junction_range_bed}
-        '''
-
-rule coverage_map_generate: ##### need to test
-    input:
-        expression_bam = data_dir+"/"+expression_dir+"/{accession}.RmdupSortedAligned.out.bam"
-
-    output:
-        coverage_map_bg = data_dir+"/"+expression_dir+"/{accession}.coverage_map.bg.gz"
-
-    conda:
-        "envs/samtools_env.yaml"
-
-    shell:
-        '''
-        samtools depth -q 29 -d 0 {input.expression_bam} | \
-        awk -v OFS="\t" '{{ if($3 >= 40) print $1,$2,($2+1),"NA",$3,"*" }}' | \
-        sort -k 1,1 -k2,2n | \
-        gzip --best -c > {ouput.depth_bed}
-        '''
-
-rule coverage_map_filter:
-    input:
-        coverage_map_bg = data_dir+"/"+expression_dir+"/{accession}.coverage_map.bg.gz",
-        germline_bed = data_dir+"/"+misc_dir+"/"+"arabidopsis_2029_NoFilters.bed",
-        blacklist_bed = data_dir+"/"+misc_dir+"/"+"blacklist.bed",
-        rna_edit_bed = data_dir+"/"+misc_dir+"/"+"rna_edit.bed",
-        exon_boundary_range_bed = data_dir+"/"+misc_dir+"/exon_boundary.range.bed",
-        polynucleotide_bed = data_dir+"/"+misc_dir+"/"+"polynucleotide.bed",
-        multi_instance_bed = data_dir+"/"+misc_dir+"/"+"multi_instance.bed",
-        vaf_bed = data_dir+"/"+misc_dir+"/"+"{accession}.vaf.bed",
-        STAR_splice_junction_range_bed = data_dir+"/"+expression_dir+"/{accession}.SJ.range.bed",
-        seq_error_bed = data_dir+"/"+misc_dir+"/"+"{accession}.seq_error.bed",
-        bcf_bed = data_dir+"/"+misc_dir+"/"+"{accession}.bcf.bed"
-
-    params:
-        chr = "{chr}"
-
-    output:
-        coverage_map_filtered_bg = data_dir+"/"+expression_dir+"/{chr}.{accession}.coverage_map.filtered.bg.gz"
-
-    conda:
-        "envs/bedtools_env.yaml"
-
-    shell:
-        '''
-        gunzip -c {input.coverage_map_bg} |
-        awk '$1 == {params.chr}' |
-        bedtools subtract -a - -b {input.germline_bed} |
-        bedtools subtract -a - -b {input.blacklist_bed} |
-        bedtools subtract -a - -b {input.rna_edit_bed} |
-        bedtools subtract -a - -b {input.exon_boundary_range_bed} |
-        bedtools subtract -a - -b {input.polynucleotide_bed} |
-        bedtools subtract -a - -b {input.multi_instance_bed} |
-        bedtools subtract -a - -b {input.vaf_bed} |
-        bedtools subtract -a - -b {input.STAR_splice_junction_range_bed} |
-        bedtools subtract -a - -b {input.seq_error_bed} |
-        bedtools subtract -a - -b {input.bcf_bed} |
-        awk -v OFS="\t" '{{ print $1,$2,$3,$5 }}' | gzip > {output.coverage_map_filtered_bg}
-        '''
-
-rule bedg_union:
-    input:
-        coverage_map_filtered_bg = expand(data_dir+"/"+expression_dir+"/{{chr}}.{accession}.coverage_map.filtered.bg.gz", accession=accessions)
-
-    output:
-        union_coverage_map_filtered_bg = data_dir+"/"+expression_dir+"/{chr}.union.bg.gz"
-
-    conda:
-        "envs/bedtools_env.yaml"
-
-    shell:
-        '''
-        bedtools unionbedg -i {input.coverage_map_filtered_bg} | gzip > {output.union_coverage_map_filtered_bg}
-        '''
-
-rule tair10_exons_gff_generate:
-    input:
-        tair10_genes_gff = data_dir+"/"+misc_dir+"/"+tair10_genes_gff
-
-    output:
-        tair10_union_exons_gff = data_dir+"/"+misc_dir+"/TAIR10_GFF3_exons.union.noambiguous.gff"
-
-    conda:
-        "envs/bedtools_env.yaml"
-
-    shell:
-        '''
-        awk -v OFS="\t" '{{
-            if($3 == "exon"){{
-                split($9, a, "Parent=");
-                split(a[2], b, ".");
-                print $1,$2,$3,$4,$5,$6,$7,$8,b[1]
-            }}
-        }}' {input.tair10_genes_gff} |
-        sort -k1,1 -k4,4n -k5,5n |
-        bedtools merge -i - -c 7,9 -o distinct |
-        awk -v OFS="\t" '{{ print $1,"TAIR10","exon",($2+1),$3,".",$4,".",$5 }}' |
-        awk '!index($9, ",")' > {output.tair10_union_exons_gff}
-        '''
-
 rule breadth_depth_process:
     input:
         tair10_union_exons_gff = data_dir+"/"+misc_dir+"/TAIR10_GFF3_exons.union.noambiguous.gff",
         genome_fa = data_dir+"/"+genome_dir+"/"+genome_fa,
         accessions_tsv = data_dir+"/"+misc_dir+"/"+accessions_tsv,
         outliers_tsv = data_dir+"/"+misc_dir+"/outliers.tsv",
+        multi_instance_bed = data_dir+"/"+misc_dir+"/multi_instance.bed",
         union_coverage_map_filtered_bg = data_dir+"/"+expression_dir+"/{chr}.union.bg.gz"
 
     output:
@@ -828,7 +844,7 @@ rule breadth_depth_process:
 
     shell:
         '''
-        Rscript src/breadth_depth.R {input.tair10_union_exons_gff} {input.genome_fa} {input.accessions_tsv} {input.outliers_tsv} {input.union_coverage_map_filtered_bg} {output.processed_breadth_depth_tsv}
+        Rscript src/breadth_depth.R {input.tair10_union_exons_gff} {input.genome_fa} {input.accessions_tsv} {input.outliers_tsv} {input.multi_instance_bed} {input.union_coverage_map_filtered_bg} {output.processed_breadth_depth_tsv}
         '''
 
 rule breadth_depth_merge:
@@ -933,12 +949,11 @@ rule features_augment:
         '''
         mkdir -p {params.results_dir}
         Rscript src/augment_features.R {input.tair10_union_exons_gff} {input.genome_fa} {input.augmented_mutations_map_tsv} {input.merged_processed_breadth_depth_tsv} {input.gc_tsv} {input.replication_timing_ratio_tsv} {input.histone_mark_signal_tsv} {output.augmented_features_tsv}
-        Rscript -e 'install.packages("gamlss.lasso", repos="https://cloud.r-project.org")'
         '''
 
 rule model_fit:
     input:
-        augmented_features_tsv = data_dir+"/"+results_dir+"/augmented.features.tsv",
+        augmented_features_tsv = data_dir+"/"+results_dir+"/augmented.features.tsv"
 
     params:
         study = "{study}",
@@ -953,7 +968,7 @@ rule model_fit:
 
     shell:
         '''
-        Rscript src/fit_model_gamlsslasso.R {input.augmented_features_tsv} {params.study} {params.ref} {params.alt} {output.model_fit_tsv}
+        Rscript src/fit_model_glmnet.R {input.augmented_features_tsv} {params.study} {params.ref} {params.alt} {output.model_fit_tsv}
         '''
 
 rule model_fit_merge:

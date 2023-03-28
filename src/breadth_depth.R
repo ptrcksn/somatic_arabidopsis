@@ -10,8 +10,9 @@ gff_file <- args[1]
 fasta_file <- args[2]
 accession_file <- args[3]
 outlier_file <- args[4]
-bedgraph_file <- args[5]
-out_file <- args[6]
+multi_instance_file <- args[5]
+bedgraph_file <- args[6]
+out_file <- args[7]
 
 
 gff <- read_tsv(gff_file, col_names=F) %>%
@@ -28,13 +29,18 @@ accession_order <- as.character(scan(accession_file))
 
 outlier <- as.character(scan(outlier_file))
 
+multi_instance <- read_tsv(multi_instance_file, col_names=F) %>%
+    dplyr::rename(chr=X1, start=X2) %>%
+    mutate(chr=paste0("Chr", chr))
+
 f <- function(x, pos){
 
     depth <- x %>%
         mutate(chr=paste0("Chr", X1)) %>%
-        dplyr::rename(start=X3) %>%
+        dplyr::rename(start=X2) %>%
         mutate(end=start) %>%
-        dplyr::select(-X1,-X2)
+        dplyr::select(-X1,-X3) %>%
+        anti_join(multi_instance, by=c("chr", "start"))
 
     colnames(depth)[2:(1+length(accession_order))] <- accession_order
 
@@ -46,15 +52,16 @@ f <- function(x, pos){
     ref <- as.character(getSeq(fa, depth_gene_r))
 
     depth_gene <- as_tibble(depth_gene_r) %>%
+        dplyr::rename(chr=seqnames) %>%
         mutate(ref=factor(ref, levels=c("A","C","G","T"))) %>%
-        inner_join(depth, by=c("start", "end"))
+        inner_join(depth, by=c("chr", "start", "end"))
 
     featurewise_breadth <- depth_gene %>%
         count(aggregate_locus, ref, .drop=F) %>%
         dplyr::rename(breadth=n)
 
     featurewise_depth <- depth_gene %>%
-        dplyr::select(!seqnames:width) %>%
+        dplyr::select(!chr:strand) %>%
         mutate(depth=rowSums(across(where(is.double)), na.rm=T)) %>%
         dplyr::select(aggregate_locus, ref, depth) %>%
         group_by(aggregate_locus, ref) %>%

@@ -14,8 +14,8 @@ multiple_instance_mutations <- mutations %>%
     dplyr::count(chr, pos) %>%
     filter(n > 1) %>%
     mutate(chrom=chr) %>%
-    mutate(chromStart=(pos-1)) %>%
-    mutate(chromEnd=pos) %>%
+    mutate(chromStart=pos) %>%
+    mutate(chromEnd=(pos+1)) %>%
     mutate(name=paste(chr, pos, sep=".")) %>%
     mutate(score=".") %>%
     mutate(strand=".") %>%

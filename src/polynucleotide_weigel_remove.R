@@ -18,7 +18,7 @@ weigel_mutations_r <- GRanges(seqnames=weigel_mutations$CHROM, IRanges(start=wei
 polynucleotide <- read_tsv(polynucleotide_bed_file, col_names=F) %>%
     dplyr::select(chrom=X1, chromStart=X2, chromEnd=X3)
 
-polynucleotide_r <- GRanges(seqnames=polynucleotide$chrom, IRanges(start=(polynucleotide$chromStart+1), end=(polynucleotide$chromEnd)))
+polynucleotide_r <- GRanges(seqnames=polynucleotide$chrom, IRanges(start=polynucleotide$chromStart, end=(polynucleotide$chromEnd-1)))
 
 weigel_mutations <- as_tibble(GRanges(as_tibble(weigel_mutations_r) %>%
     anti_join(as_tibble(join_overlap_intersect(polynucleotide_r, weigel_mutations_r)), by=c("seqnames", "start", "end", "ref", "alt", "src")))) %>%

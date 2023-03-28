@@ -22,7 +22,7 @@ polynucleotide <- lapply(CHROMOSOMES, function(x){
     aaa <- gregexpr("AAAAAAA+|CCCCCCC+|GGGGGGG+|TTTTTTT+", fa[[x]])
     left <- aaa[[1]] - NEIGHBOURHOOD
     right <- aaa[[1]] + attr(aaa[[1]], "match.length") - 1 + NEIGHBOURHOOD
-    tibble(chrom=x, chromStart=(left-1), chromEnd=right, name=".", score=".", strand=".")
+    tibble(chrom=x, chromStart=left, chromEnd=(right+1), name=".", score=".", strand=".")
 })
 
 polynucleotide_bed <- map_dfr(polynucleotide, bind_rows)
