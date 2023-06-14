@@ -1,3 +1,5 @@
+set.seed(1)
+
 library(tidyverse)
 library(Biostrings)
 library(BSgenome)
@@ -14,11 +16,12 @@ alt_base <- args[4]
 out_file <- args[5]
 
 
-fit_model <- function(m, b, X_names){
+fit_model <- function(m, b, X_names, fold_ids){
     linear_model <- cv.glmnet(x=X_names,
         y=m,
         offset=b,
-        family=poisson())
+        family=poisson(),
+	foldid=fold_ids)
 
     beta <- coef(linear_model, s="lambda.min")
 
@@ -48,6 +51,10 @@ features_sub <- features %>%
     mutate(transcribed_status=as.numeric(scale(ifelse(transcribed_status == "template", 1, 0)))) %>%
     mutate(across(GC:H4K16ac_signal, ~as.numeric(scale(.x)))) %>%
     mutate(log_norm_depth=log(norm_depth))
+
+n_folds <- 10
+fold_ids <- sample((1:nrow(features_sub) %% n_folds), size=nrow(features_sub), replace=F)
+fold_ids <- ifelse(fold_ids == 0, n_folds, fold_ids)
 
 m <- if(study == "epigenomes"){ features_sub$epigenomes }else{ features_sub$EU_som }
 
@@ -102,7 +109,7 @@ X_names <- if(study == "epigenomes"){
         ))
     }
 
-fit <- fit_model(m=m, b=b, X_names=X_names)
+fit <- fit_model(m=m, b=b, X_names=X_names, fold_ids=fold_ids)
 
 fit_result <- tibble(study=study, ref=ref_base, alt=alt_base, covariate=rownames(fit), estimate=as.numeric(fit))
 
